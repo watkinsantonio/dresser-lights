@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dresser Lights</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #1a1d24; --line: #2a2f3a; --text: #eef0f4; --muted: #9aa3b2;
+    --accent: #ff4fa3; --ok: #3ddc84; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; color: var(--text); background: #262a33; border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 14px; cursor: pointer; }
+  button:hover { background: #2f3440; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); margin-top: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
+  .dot.on { background: var(--ok); }
+  .power { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .power button { padding: 14px; font-weight: 600; }
+  .preview { height: 64px; border-radius: 12px; margin-bottom: 12px; border: 1px solid var(--line); transition: background .15s; }
+  input[type=color] { width: 56px; height: 44px; border: none; background: none; padding: 0; cursor: pointer; }
+  .swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 12px; }
+  .swatch { aspect-ratio: 1; border-radius: 10px; border: 2px solid transparent; padding: 0; }
+  .swatch:hover { border-color: #fff; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 10px 0 6px; }
+  label span { float: right; color: var(--text); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  select { width: 100%; font: inherit; color: var(--text); background: #262a33; border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .warn { background: #3a2a12; border-color: #6b4a14; color: #ffd28a; font-size: 14px; }
+  .log { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); max-height: 120px; overflow: auto; white-space: pre-wrap; }
+  .disabled-area { opacity: .45; pointer-events: none; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Dresser Lights</h1>
+  <p class="sub">Controls Bluetooth LED strips that normally use the Lotus Lantern app (ELK-BLEDOM type).</p>
+
+  <div id="unsupported" class="card warn" hidden>
+    This browser can't talk to Bluetooth devices. Open this page in <b>Google Chrome</b> or <b>Microsoft Edge</b>
+    (on a Mac, PC or Android phone). Safari and iPhone browsers don't support it — on iPhone, the free
+    <b>Bluefy</b> browser does.
+  </div>
+
+  <section class="card">
+    <h2>Connection</h2>
+    <div class="row">
+      <button id="connect" class="primary">Connect to lights</button>
+      <button id="connectAll" title="Use this if your lights don't show up in the list">Show all devices</button>
+      <button id="disconnect" hidden>Disconnect</button>
+    </div>
+    <div class="status"><div id="dot" class="dot"></div><span id="statusText">Not connected</span></div>
+  </section>
+
+  <div id="controls" class="disabled-area">
+    <section class="card">
+      <h2>Power</h2>
+      <div class="power">
+        <button id="on">On</button>
+        <button id="off">Off</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Color</h2>
+      <div id="preview" class="preview" style="background:#ff4fa3"></div>
+      <div class="row">
+        <input id="color" type="color" value="#ff4fa3" aria-label="Pick a color">
+        <span class="sub" style="margin:0">Tap to pick any color</span>
+      </div>
+      <div id="swatches" class="swatches"></div>
+      <label>Brightness <span id="briVal">100%</span></label>
+      <input id="bri" type="range" min="0" max="100" value="100">
+    </section>
+
+    <section class="card">
+      <h2>Effects</h2>
+      <select id="effect"><option value="">— Choose an effect —</option></select>
+      <label>Speed <span id="spdVal">50%</span></label>
+      <input id="spd" type="range" min="0" max="100" value="50">
+    </section>
+  </div>
+
+  <section class="card">
+    <details>
+      <summary>Activity log</summary>
+      <div id="log" class="log"></div>
+    </details>
+  </section>
+</main>
+
+<script>
+// Known GATT layouts for these cheap LED controllers.
+const LAYOUTS = [
+  { service: 0xfff0, char: 0xfff3 }, // ELK-BLEDOM / Lotus Lantern
+  { service: 0xffe0, char: 0xffe1 }, // Triones / some clones
+];
+const NAME_PREFIXES = ["ELK", "MELK", "BLEDOM", "LEDBLE", "ELK-BLE", "Triones", "LED"];
+
+const EFFECTS = [
+  [0x87, "Jump: red / green / blue"],
+  [0x88, "Jump: 7 colors"],
+  [0x93, "Fade: red / green / blue"],
+  [0x94, "Fade: 7 colors (rainbow)"],
+  [0x89, "Fade: red"], [0x8a, "Fade: green"], [0x8b, "Fade: blue"],
+  [0x8c, "Fade: yellow"], [0x8d, "Fade: cyan"], [0x8e, "Fade: purple"], [0x8f, "Fade: white"],
+  [0x90, "Fade: red ↔ green"], [0x91, "Fade: red ↔ blue"], [0x92, "Fade: green ↔ blue"],
+  [0x9c, "Strobe: 7 colors"],
+  [0x95, "Strobe: red"], [0x96, "Strobe: green"], [0x97, "Strobe: blue"],
+  [0x98, "Strobe: yellow"], [0x99, "Strobe: cyan"], [0x9a, "Strobe: purple"], [0x9b, "Strobe: white"],
+];
+const SWATCHES = ["#ff0000","#ff7a00","#ffd400","#00ff00","#00ffd0","#0080ff",
+                  "#0000ff","#8a00ff","#ff00c8","#ff4fa3","#ffb27a","#ffffff"];
+
+const $ = id => document.getElementById(id);
+let device = null, ch = null;
+
+function log(msg) { const el = $("log"); el.textContent = `${new Date().toLocaleTimeString()}  ${msg}\n` + el.textContent; }
+function setStatus(connected, text) {
+  $("dot").classList.toggle("on", connected);
+  $("statusText").textContent = text;
+  $("controls").classList.toggle("disabled-area", !connected);
+  $("disconnect").hidden = !connected;
+  $("connect").hidden = connected;
+  $("connectAll").hidden = connected;
+}
+
+// ---- Command builders (9-byte frames: 7E .. EF) ----
+const cmd = {
+  on:     () => [0x7e,0x00,0x04,0xf0,0x00,0x01,0xff,0x00,0xef],
+  off:    () => [0x7e,0x00,0x04,0x00,0x00,0x00,0xff,0x00,0xef],
+  color:  (r,g,b) => [0x7e,0x00,0x05,0x03,r,g,b,0x00,0xef],
+  bright: (v) => [0x7e,0x00,0x01,v,0x00,0x00,0x00,0x00,0xef],
+  effect: (m) => [0x7e,0x00,0x03,m,0x03,0x00,0x00,0x00,0xef],
+  speed:  (v) => [0x7e,0x00,0x02,v,0x00,0x00,0x00,0x00,0xef],
+};
+
+// Serialize writes and drop stale ones (so dragging a slider doesn't flood the device).
+let busy = false; const pending = new Map();
+function send(key, bytes) {
+  if (!ch) return;
+  pending.set(key, bytes);
+  if (!busy) pump();
+}
+async function pump() {
+  busy = true;
+  while (pending.size && ch) {
+    const [key, bytes] = pending.entries().next().value;
+    pending.delete(key);
+    const data = new Uint8Array(bytes);
+    try {
+      if (ch.writeValueWithoutResponse && ch.properties.writeWithoutResponse) await ch.writeValueWithoutResponse(data);
+      else await ch.writeValue(data);
+    } catch (e) { log(`Write failed (${key}): ${e.message}`); }
+    await new Promise(r => setTimeout(r, 40));
+  }
+  busy = false;
+}
+
+// ---- Connection ----
+async function connect(showAll) {
+  try {
+    const optionalServices = LAYOUTS.map(l => l.service);
+    const opts = showAll
+      ? { acceptAllDevices: true, optionalServices }
+      : { filters: [...NAME_PREFIXES.map(p => ({ namePrefix: p })), ...optionalServices.map(s => ({ services: [s] }))], optionalServices };
+    setStatus(false, "Choose your dresser in the popup…");
+    device = await navigator.bluetooth.requestDevice(opts);
+    device.addEventListener("gattserverdisconnected", () => { ch = null; setStatus(false, "Disconnected"); log("Device disconnected"); });
+    setStatus(false, `Connecting to ${device.name || "device"}…`);
+    const server = await device.gatt.connect();
+    for (const l of LAYOUTS) {
+      try {
+        const svc = await server.getPrimaryService(l.service);
+        ch = await svc.getCharacteristic(l.char);
+        log(`Using service ${l.service.toString(16)} / char ${l.char.toString(16)}`);
+        break;
+      } catch { /* try next layout */ }
+    }
+    if (!ch) throw new Error("Connected, but this device doesn't look like a supported LED controller.");
+    setStatus(true, `Connected to ${device.name || "lights"}`);
+    log(`Connected to ${device.name || device.id}`);
+  } catch (e) {
+    setStatus(false, e.name === "NotFoundError" ? "No device chosen" : `Couldn't connect: ${e.message}`);
+    log(`Connect error: ${e.message}`);
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  }
+}
+
+// ---- UI wiring ----
+function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n>>16)&255, (n>>8)&255, n&255]; }
+function applyColor(hex) {
+  $("color").value = hex; $("preview").style.background = hex;
+  send("color", cmd.color(...hexToRgb(hex)));
+}
+
+if (!navigator.bluetooth) {
+  $("unsupported").hidden = false;
+  $("connect").disabled = $("connectAll").disabled = true;
+}
+$("connect").onclick = () => connect(false);
+$("connectAll").onclick = () => connect(true);
+$("disconnect").onclick = () => device?.gatt?.connected && device.gatt.disconnect();
+$("on").onclick = () => send("power", cmd.on());
+$("off").onclick = () => send("power", cmd.off());
+$("color").addEventListener("input", e => applyColor(e.target.value));
+
+for (const hex of SWATCHES) {
+  const b = document.createElement("button");
+  b.className = "swatch"; b.style.background = hex; b.title = hex; b.setAttribute("aria-label", hex);
+  b.onclick = () => applyColor(hex);
+  $("swatches").appendChild(b);
+}
+$("bri").addEventListener("input", e => { $("briVal").textContent = e.target.value + "%"; send("bright", cmd.bright(+e.target.value)); });
+for (const [code, name] of EFFECTS) $("effect").add(new Option(name, code));
+$("effect").addEventListener("change", e => e.target.value && send("effect", cmd.effect(+e.target.value)));
+$("spd").addEventListener("input", e => { $("spdVal").textContent = e.target.value + "%"; send("speed", cmd.speed(+e.target.value)); });
+</script>
+</body>
+</html>

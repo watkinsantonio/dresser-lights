@@ -40,6 +40,10 @@
   .warn { background: #3a2a12; border-color: #6b4a14; color: #ffd28a; font-size: 14px; }
   .log { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); max-height: 120px; overflow: auto; white-space: pre-wrap; }
   .disabled-area { opacity: .45; pointer-events: none; }
+  .power button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); margin-top: 12px; cursor: pointer; }
+  .toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
   details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 </style>
 </head>
@@ -62,9 +66,11 @@
       <button id="disconnect" hidden>Disconnect</button>
     </div>
     <div class="status"><div id="dot" class="dot"></div><span id="statusText">Not connected</span></div>
+    <label class="toggle"><input id="restore" type="checkbox" checked> Put my saved settings back on the lights when I connect</label>
+    <p id="offlineNote" class="note">Your settings are saved on this device. Changes you make while disconnected are sent when you connect.</p>
   </section>
 
-  <div id="controls" class="disabled-area">
+  <div id="controls">
     <section class="card">
       <h2>Power</h2>
       <div class="power">
@@ -134,7 +140,7 @@ function log(msg) { const el = $("log"); el.textContent = `${new Date().toLocale
 function setStatus(connected, text) {
   $("dot").classList.toggle("on", connected);
   $("statusText").textContent = text;
-  $("controls").classList.toggle("disabled-area", !connected);
+  $("offlineNote").hidden = connected;
   $("disconnect").hidden = !connected;
   $("connect").hidden = connected;
   $("connectAll").hidden = connected;
@@ -191,7 +197,8 @@ async function connect(showAll) {
       : { filters: NAME_PREFIXES.map(p => ({ namePrefix: p })), optionalServices };
     setStatus(false, "Choose your dresser in the popup…");
     device = await navigator.bluetooth.requestDevice(opts);
-    device.addEventListener("gattserverdisconnected", () => { ch = null; setStatus(false, "Disconnected"); log("Device disconnected"); });
+    watchDevice(device);
+    store.set("deviceId", device.id);
     log(`Picked ${device.name || device.id}`);
 
     stage = "connecting to the lights";
@@ -223,8 +230,7 @@ async function connect(showAll) {
       }
     }
     if (!ch) throw new Error("this device doesn't look like a supported LED controller");
-    setStatus(true, `Connected to ${device.name || "lights"}`);
-    log(`Connected to ${device.name || device.id}`);
+    onConnected();
   } catch (e) {
     const msg = errText(e);
     const cancelled = e?.name === "NotFoundError" || /cancel/i.test(msg);
@@ -236,34 +242,135 @@ async function connect(showAll) {
   }
 }
 
-// ---- UI wiring ----
+// ---- Saved settings (kept on this phone/computer) ----
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("dl." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("dl." + k, JSON.stringify(v)); } catch { /* storage blocked: just don't save */ } },
+};
+const DEFAULTS = { power: "on", mode: "color", color: "#ff4fa3", bri: 100, effect: "", spd: 50 };
+const state = Object.assign({}, DEFAULTS, store.get("settings", {}));
+const save = () => store.set("settings", state);
+
 function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n>>16)&255, (n>>8)&255, n&255]; }
-function applyColor(hex) {
-  $("color").value = hex; $("preview").style.background = hex;
+
+// Show the saved settings in the controls.
+function renderUI() {
+  $("color").value = state.color; $("preview").style.background = state.color;
+  $("bri").value = state.bri; $("briVal").textContent = state.bri + "%";
+  $("spd").value = state.spd; $("spdVal").textContent = state.spd + "%";
+  $("effect").value = state.mode === "effect" ? String(state.effect) : "";
+  $("on").classList.toggle("active", state.power === "on");
+  $("off").classList.toggle("active", state.power === "off");
+  $("restore").checked = store.get("restore", true);
+}
+
+// Send the whole saved look to the lights (after connecting).
+function applyAll() {
+  if (state.power === "off") { send("power", cmd.off()); return; }
+  send("power", cmd.on());
+  if (state.mode === "effect" && state.effect) {
+    send("effect", cmd.effect(+state.effect));
+    send("speed", cmd.speed(state.spd));
+  } else {
+    send("color", cmd.color(...hexToRgb(state.color)));
+  }
+  send("bright", cmd.bright(state.bri));
+}
+
+function setPower(p) { state.power = p; save(); renderUI(); send("power", p === "on" ? cmd.on() : cmd.off()); }
+function setColor(hex) {
+  state.color = hex; state.mode = "color"; save(); renderUI();
   send("color", cmd.color(...hexToRgb(hex)));
 }
 
+// ---- Staying connected ----
+let manualDisconnect = false, reconnecting = false;
+function onConnected() {
+  setStatus(true, `Connected to ${device.name || "lights"}`);
+  log(`Connected to ${device.name || device.id}`);
+  if (store.get("restore", true)) { applyAll(); log("Restored saved settings"); }
+}
+function watchDevice(d) {
+  d.addEventListener("gattserverdisconnected", () => {
+    ch = null;
+    if (manualDisconnect) { manualDisconnect = false; setStatus(false, "Disconnected"); log("Disconnected"); return; }
+    setStatus(false, "Connection lost. Reconnecting…"); log("Connection lost");
+    reconnect();
+  });
+}
+async function attachTo(server) {
+  for (const l of LAYOUTS) {
+    try { ch = await (await server.getPrimaryService(l.service)).getCharacteristic(l.char); return true; } catch { /* next */ }
+  }
+  return false;
+}
+// Quietly reconnect to the lights we already picked (after sleep, walking out of range, etc).
+async function reconnect() {
+  if (reconnecting || !device || ch) return;
+  reconnecting = true;
+  for (let i = 1; i <= 5 && !ch; i++) {
+    try {
+      const server = await device.gatt.connect();
+      if (await attachTo(server)) { onConnected(); break; }
+    } catch (e) { log(`Reconnect try ${i}: ${errText(e)}`); }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  reconnecting = false;
+  if (!ch) setStatus(false, "Not connected. Tap Connect to lights when you're back in range.");
+}
+// When the page reopens, find the lights picked last time (if the browser allows it).
+async function autoReconnect() {
+  const id = store.get("deviceId", null);
+  if (!id || !navigator.bluetooth?.getDevices) return;
+  try {
+    const known = (await navigator.bluetooth.getDevices()).find(d => d.id === id);
+    if (!known) return;
+    device = known; watchDevice(device);
+    setStatus(false, `Reconnecting to ${device.name || "your lights"}…`);
+    await reconnect();
+  } catch (e) { log(`Auto-reconnect unavailable: ${errText(e)}`); }
+}
+// Phone woke up / tab came back: reconnect if we dropped while asleep.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && device && !ch) reconnect();
+});
+
+// ---- UI wiring ----
 if (!navigator.bluetooth) {
   $("unsupported").hidden = false;
   $("connect").disabled = $("connectAll").disabled = true;
 }
 $("connect").onclick = () => connect(false);
 $("connectAll").onclick = () => connect(true);
-$("disconnect").onclick = () => device?.gatt?.connected && device.gatt.disconnect();
-$("on").onclick = () => send("power", cmd.on());
-$("off").onclick = () => send("power", cmd.off());
-$("color").addEventListener("input", e => applyColor(e.target.value));
+$("disconnect").onclick = () => { manualDisconnect = true; device?.gatt?.connected && device.gatt.disconnect(); };
+$("restore").addEventListener("change", e => store.set("restore", e.target.checked));
+$("on").onclick = () => setPower("on");
+$("off").onclick = () => setPower("off");
+$("color").addEventListener("input", e => setColor(e.target.value));
 
 for (const hex of SWATCHES) {
   const b = document.createElement("button");
   b.className = "swatch"; b.style.background = hex; b.title = hex; b.setAttribute("aria-label", hex);
-  b.onclick = () => applyColor(hex);
+  b.onclick = () => setColor(hex);
   $("swatches").appendChild(b);
 }
-$("bri").addEventListener("input", e => { $("briVal").textContent = e.target.value + "%"; send("bright", cmd.bright(+e.target.value)); });
+$("bri").addEventListener("input", e => {
+  state.bri = +e.target.value; save(); $("briVal").textContent = state.bri + "%";
+  send("bright", cmd.bright(state.bri));
+});
 for (const [code, name] of EFFECTS) $("effect").add(new Option(name, code));
-$("effect").addEventListener("change", e => e.target.value && send("effect", cmd.effect(+e.target.value)));
-$("spd").addEventListener("input", e => { $("spdVal").textContent = e.target.value + "%"; send("speed", cmd.speed(+e.target.value)); });
+$("effect").addEventListener("change", e => {
+  if (!e.target.value) return;
+  state.effect = +e.target.value; state.mode = "effect"; save();
+  send("effect", cmd.effect(state.effect));
+});
+$("spd").addEventListener("input", e => {
+  state.spd = +e.target.value; save(); $("spdVal").textContent = state.spd + "%";
+  send("speed", cmd.speed(state.spd));
+});
+
+renderUI();
+if (navigator.bluetooth) autoReconnect();
 </script>
 </body>
 </html>

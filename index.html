@@ -96,6 +96,16 @@
       <select id="effect"><option value="">— Choose an effect —</option></select>
       <label>Speed <span id="spdVal">50%</span></label>
       <input id="spd" type="range" min="0" max="100" value="50">
+      <details style="margin-top:14px">
+        <summary>Effect finder (if an effect looks wrong)</summary>
+        <p class="note">Steps through every effect number your lights know. Watch the dresser and note which number does what.</p>
+        <div class="row" style="margin-top:10px">
+          <button id="fxPrev" aria-label="Previous effect">&#9664;</button>
+          <b id="fxNum" style="min-width:64px;text-align:center">#135</b>
+          <button id="fxNext" aria-label="Next effect">&#9654;</button>
+          <span id="fxName" class="note" style="margin:0"></span>
+        </div>
+      </details>
     </section>
   </div>
 
@@ -118,17 +128,18 @@ const LAYOUTS = [
 const errText = e => (e && (e.message || e.name)) || (typeof e === "string" ? e : "") || JSON.stringify(e) || "unknown error";
 const NAME_PREFIXES = ["ELK", "MELK", "BLEDOM", "LEDBLE", "ELK-BLE", "Triones", "LED"];
 
+// Effect numbers used by ELK-BLEDOM / Lotus Lantern controllers.
 const EFFECTS = [
   [0x87, "Jump: red / green / blue"],
   [0x88, "Jump: 7 colors"],
-  [0x93, "Fade: red / green / blue"],
-  [0x94, "Fade: 7 colors (rainbow)"],
-  [0x89, "Fade: red"], [0x8a, "Fade: green"], [0x8b, "Fade: blue"],
-  [0x8c, "Fade: yellow"], [0x8d, "Fade: cyan"], [0x8e, "Fade: purple"], [0x8f, "Fade: white"],
-  [0x90, "Fade: red ↔ green"], [0x91, "Fade: red ↔ blue"], [0x92, "Fade: green ↔ blue"],
-  [0x9c, "Strobe: 7 colors"],
-  [0x95, "Strobe: red"], [0x96, "Strobe: green"], [0x97, "Strobe: blue"],
-  [0x98, "Strobe: yellow"], [0x99, "Strobe: cyan"], [0x9a, "Strobe: purple"], [0x9b, "Strobe: white"],
+  [0x89, "Fade: red / green / blue"],
+  [0x8a, "Fade: 7 colors (rainbow)"],
+  [0x8b, "Fade: red"], [0x8c, "Fade: green"], [0x8d, "Fade: blue"],
+  [0x8e, "Fade: yellow"], [0x8f, "Fade: cyan"], [0x90, "Fade: purple"], [0x91, "Fade: white"],
+  [0x92, "Fade: red ↔ green"], [0x93, "Fade: red ↔ blue"], [0x94, "Fade: green ↔ blue"],
+  [0x95, "Strobe: 7 colors"],
+  [0x96, "Strobe: red"], [0x97, "Strobe: green"], [0x98, "Strobe: blue"],
+  [0x99, "Strobe: yellow"], [0x9a, "Strobe: cyan"], [0x9b, "Strobe: purple"], [0x9c, "Strobe: white"],
 ];
 const SWATCHES = ["#ff0000","#ff7a00","#ffd400","#00ff00","#00ffd0","#0080ff",
                   "#0000ff","#8a00ff","#ff00c8","#ff4fa3","#ffb27a","#ffffff"];
@@ -368,6 +379,23 @@ $("spd").addEventListener("input", e => {
   state.spd = +e.target.value; save(); $("spdVal").textContent = state.spd + "%";
   send("speed", cmd.speed(state.spd));
 });
+
+// Effect finder: step through raw effect numbers 0x80-0x9c.
+let fx = 0x87;
+function showFx(sendIt) {
+  const known = EFFECTS.find(([c]) => c === fx);
+  $("fxNum").textContent = "#" + fx;
+  $("fxName").textContent = known ? `(listed as "${known[1]}")` : "(not in the list)";
+  if (sendIt) {
+    state.effect = fx; state.mode = "effect"; save();
+    $("effect").value = known ? String(fx) : "";
+    send("effect", cmd.effect(fx));
+    log(`Effect finder: sent #${fx}`);
+  }
+}
+$("fxPrev").onclick = () => { fx = fx <= 0x80 ? 0x9c : fx - 1; showFx(true); };
+$("fxNext").onclick = () => { fx = fx >= 0x9c ? 0x80 : fx + 1; showFx(true); };
+showFx(false);
 
 renderUI();
 if (navigator.bluetooth) autoReconnect();

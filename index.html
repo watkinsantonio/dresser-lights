@@ -102,11 +102,14 @@
 </main>
 
 <script>
-// Known GATT layouts for these cheap LED controllers.
+// Known GATT layouts for these cheap LED controllers (full UUIDs: Bluefy needs them spelled out).
+const uuid16 = n => `0000${n.toString(16).padStart(4, "0")}-0000-1000-8000-00805f9b34fb`;
 const LAYOUTS = [
-  { service: 0xfff0, char: 0xfff3 }, // ELK-BLEDOM / Lotus Lantern
-  { service: 0xffe0, char: 0xffe1 }, // Triones / some clones
+  { service: uuid16(0xfff0), char: uuid16(0xfff3) }, // ELK-BLEDOM / Lotus Lantern
+  { service: uuid16(0xffe0), char: uuid16(0xffe1) }, // Triones / some clones
 ];
+// Bluefy sometimes rejects with a bare string or an object with no message.
+const errText = e => (e && (e.message || e.name)) || (typeof e === "string" ? e : "") || JSON.stringify(e) || "unknown error";
 const NAME_PREFIXES = ["ELK", "MELK", "BLEDOM", "LEDBLE", "ELK-BLE", "Triones", "LED"];
 
 const EFFECTS = [
@@ -160,10 +163,19 @@ async function pump() {
     const [key, bytes] = pending.entries().next().value;
     pending.delete(key);
     const data = new Uint8Array(bytes);
-    try {
-      if (ch.writeValueWithoutResponse && ch.properties.writeWithoutResponse) await ch.writeValueWithoutResponse(data);
-      else await ch.writeValue(data);
-    } catch (e) { log(`Write failed (${key}): ${e.message}`); }
+    // Try every write style the browser offers; Bluefy and Chrome differ here.
+    const attempts = [];
+    if (ch.writeValueWithoutResponse) attempts.push(() => ch.writeValueWithoutResponse(data));
+    attempts.push(() => ch.writeValue(data));
+    if (ch.writeValueWithResponse) attempts.push(() => ch.writeValueWithResponse(data));
+    let lastErr = null, ok = false;
+    for (const attempt of attempts) {
+      try { await attempt(); ok = true; break; } catch (e) { lastErr = e; }
+    }
+    if (!ok) {
+      log(`Write failed (${key}): ${errText(lastErr)}`);
+      $("statusText").textContent = `Connected, but the lights rejected the command: ${errText(lastErr)}`;
+    }
     await new Promise(r => setTimeout(r, 40));
   }
   busy = false;
@@ -171,30 +183,55 @@ async function pump() {
 
 // ---- Connection ----
 async function connect(showAll) {
+  let stage = "opening the device list";
   try {
     const optionalServices = LAYOUTS.map(l => l.service);
     const opts = showAll
       ? { acceptAllDevices: true, optionalServices }
-      : { filters: [...NAME_PREFIXES.map(p => ({ namePrefix: p })), ...optionalServices.map(s => ({ services: [s] }))], optionalServices };
+      : { filters: NAME_PREFIXES.map(p => ({ namePrefix: p })), optionalServices };
     setStatus(false, "Choose your dresser in the popup…");
     device = await navigator.bluetooth.requestDevice(opts);
     device.addEventListener("gattserverdisconnected", () => { ch = null; setStatus(false, "Disconnected"); log("Device disconnected"); });
+    log(`Picked ${device.name || device.id}`);
+
+    stage = "connecting to the lights";
     setStatus(false, `Connecting to ${device.name || "device"}…`);
-    const server = await device.gatt.connect();
+    let server = null;
+    for (let i = 1; i <= 3 && !server; i++) {  // iPhones often fail the first try
+      try { server = await device.gatt.connect(); }
+      catch (e) { log(`Connect try ${i} failed: ${errText(e)}`); if (i === 3) throw e; await new Promise(r => setTimeout(r, 700)); }
+    }
+
+    stage = "finding the light controls";
     for (const l of LAYOUTS) {
       try {
         const svc = await server.getPrimaryService(l.service);
         ch = await svc.getCharacteristic(l.char);
-        log(`Using service ${l.service.toString(16)} / char ${l.char.toString(16)}`);
+        log(`Using ${l.char}`);
         break;
-      } catch { /* try next layout */ }
+      } catch (e) { log(`No ${l.char.slice(4, 8)}: ${errText(e)}`); }
     }
-    if (!ch) throw new Error("Connected, but this device doesn't look like a supported LED controller.");
+    if (!ch) {
+      for (const l of LAYOUTS) {
+        try {
+          const svc = await server.getPrimaryService(l.service);
+          for (const c of await svc.getCharacteristics()) {
+            if (c.properties.write || c.properties.writeWithoutResponse) { ch = c; log(`Using fallback ${c.uuid}`); break; }
+          }
+        } catch { /* keep looking */ }
+        if (ch) break;
+      }
+    }
+    if (!ch) throw new Error("this device doesn't look like a supported LED controller");
     setStatus(true, `Connected to ${device.name || "lights"}`);
     log(`Connected to ${device.name || device.id}`);
   } catch (e) {
-    setStatus(false, e.name === "NotFoundError" ? "No device chosen" : `Couldn't connect: ${e.message}`);
-    log(`Connect error: ${e.message}`);
+    const msg = errText(e);
+    const cancelled = e?.name === "NotFoundError" || /cancel/i.test(msg);
+    setStatus(false, cancelled
+      ? "No device chosen. If your dresser wasn't in the list, close the Lotus Lantern app, turn the lights on, and tap \"Show all devices\"."
+      : `Couldn't connect while ${stage}: ${msg}`);
+    log(`Error while ${stage}: ${msg}`);
     if (device?.gatt?.connected) device.gatt.disconnect();
   }
 }

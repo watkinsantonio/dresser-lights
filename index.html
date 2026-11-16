@@ -97,15 +97,42 @@
       <label>Speed <span id="spdVal">50%</span></label>
       <input id="spd" type="range" min="0" max="100" value="50">
       <details style="margin-top:14px">
-        <summary>Effect finder (if an effect looks wrong)</summary>
-        <p class="note">Steps through every effect number your lights know. Watch the dresser and note which number does what.</p>
+        <summary>Effects look wrong?</summary>
+        <label for="dialect">Light type</label>
+        <select id="dialect">
+          <option value="modern">Newer lights (Lotus Lantern app)</option>
+          <option value="classic">Older lights (classic ELK-BLEDOM)</option>
+        </select>
+        <p class="note">Try the other type if effects don't match their names. The effect finder below steps through every effect number so you can see what each one does.</p>
         <div class="row" style="margin-top:10px">
           <button id="fxPrev" aria-label="Previous effect">&#9664;</button>
-          <b id="fxNum" style="min-width:64px;text-align:center">#135</b>
+          <b id="fxNum" style="min-width:64px;text-align:center">#128</b>
           <button id="fxNext" aria-label="Next effect">&#9654;</button>
           <span id="fxName" class="note" style="margin:0"></span>
         </div>
       </details>
+    </section>
+
+    <section class="card">
+      <h2>Music (lights' built-in mic)</h2>
+      <p class="note" style="margin:0 0 12px">The lights listen with their own microphone and flash to music or any sound. Your phone doesn't need to stay connected.</p>
+      <div class="power">
+        <button id="micOn">Music on</button>
+        <button id="micOff">Music off</button>
+      </div>
+      <label for="micMode">Style</label>
+      <select id="micMode">
+        <option value="128">Classic</option>
+        <option value="129">Soft</option>
+        <option value="130">Dynamic</option>
+        <option value="131">Disco</option>
+        <option value="132">Style 5</option>
+        <option value="133">Style 6</option>
+        <option value="134">Style 7</option>
+        <option value="135">Style 8</option>
+      </select>
+      <label>Sensitivity <span id="sensVal">60%</span></label>
+      <input id="sens" type="range" min="0" max="100" value="60">
     </section>
   </div>
 
@@ -128,19 +155,18 @@ const LAYOUTS = [
 const errText = e => (e && (e.message || e.name)) || (typeof e === "string" ? e : "") || JSON.stringify(e) || "unknown error";
 const NAME_PREFIXES = ["ELK", "MELK", "BLEDOM", "LEDBLE", "ELK-BLE", "Triones", "LED"];
 
-// Effect numbers used by ELK-BLEDOM / Lotus Lantern controllers.
+// Effects in the Lotus Lantern app's order. Newer lights use number 0x80 + position;
+// older (classic ELK-BLEDOM) lights use the "classic" number.
 const EFFECTS = [
-  [0x87, "Jump: red / green / blue"],
-  [0x88, "Jump: 7 colors"],
-  [0x89, "Fade: red / green / blue"],
-  [0x8a, "Fade: 7 colors (rainbow)"],
-  [0x8b, "Fade: red"], [0x8c, "Fade: green"], [0x8d, "Fade: blue"],
-  [0x8e, "Fade: yellow"], [0x8f, "Fade: cyan"], [0x90, "Fade: purple"], [0x91, "Fade: white"],
-  [0x92, "Fade: red ↔ green"], [0x93, "Fade: red ↔ blue"], [0x94, "Fade: green ↔ blue"],
-  [0x95, "Strobe: 7 colors"],
-  [0x96, "Strobe: red"], [0x97, "Strobe: green"], [0x98, "Strobe: blue"],
-  [0x99, "Strobe: yellow"], [0x9a, "Strobe: cyan"], [0x9b, "Strobe: purple"], [0x9c, "Strobe: white"],
-];
+  ["Jump: red / green / blue", 0x87], ["Jump: 7 colors", 0x88],
+  ["Fade: red / green / blue", 0x89], ["Fade: 7 colors (rainbow)", 0x8a],
+  ["Fade: red", 0x8b], ["Fade: green", 0x8c], ["Fade: blue", 0x8d], ["Fade: yellow", 0x8e],
+  ["Fade: cyan", 0x8f], ["Fade: purple", 0x90], ["Fade: white", 0x91],
+  ["Fade: red \u2194 green", 0x92], ["Fade: red \u2194 blue", 0x93], ["Fade: green \u2194 blue", 0x94],
+  ["Strobe: red", 0x96], ["Strobe: green", 0x97], ["Strobe: blue", 0x98], ["Strobe: yellow", 0x99],
+  ["Strobe: cyan", 0x9a], ["Strobe: purple", 0x9b], ["Strobe: white", 0x9c],
+  ["Strobe: 7 colors", 0x95],
+].map(([name, classic], i) => ({ id: i, name, modern: 0x80 + i, classic }));
 const SWATCHES = ["#ff0000","#ff7a00","#ffd400","#00ff00","#00ffd0","#0080ff",
                   "#0000ff","#8a00ff","#ff00c8","#ff4fa3","#ffb27a","#ffffff"];
 
@@ -163,8 +189,16 @@ const cmd = {
   off:    () => [0x7e,0x00,0x04,0x00,0x00,0x00,0xff,0x00,0xef],
   color:  (r,g,b) => [0x7e,0x00,0x05,0x03,r,g,b,0x00,0xef],
   bright: (v) => [0x7e,0x00,0x01,v,0x00,0x00,0x00,0x00,0xef],
-  effect: (m) => [0x7e,0x00,0x03,m,0x03,0x00,0x00,0x00,0xef],
-  speed:  (v) => [0x7e,0x00,0x02,v,0x00,0x00,0x00,0x00,0xef],
+  effect: (code) => state.dialect === "classic"
+    ? [0x7e,0x00,0x03,code,0x03,0x00,0x00,0x00,0xef]
+    : [0x7e,0x05,0x03,code,0x03,0xff,0xff,0x00,0xef],
+  speed:  (v) => state.dialect === "classic"
+    ? [0x7e,0x00,0x02,v,0x00,0x00,0x00,0x00,0xef]
+    : [0x7e,0x04,0x02,Math.round(v * 2.55),0xff,0xff,0xff,0x00,0xef],
+  // Built-in microphone (Lotus Lantern lights)
+  mic:     (on) => [0x7e,0x04,0x07,on ? 0x01 : 0x00,0xff,0xff,0xff,0x00,0xef],
+  micMode: (m) => [0x7e,0x05,0x03,m,0x04,0xff,0xff,0x00,0xef],
+  micSens: (v) => [0x7e,0x04,0x06,v,0xff,0xff,0xff,0x00,0xef],
 };
 
 // Serialize writes and drop stale ones (so dragging a slider doesn't flood the device).
@@ -193,7 +227,9 @@ async function pump() {
       log(`Write failed (${key}): ${errText(lastErr)}`);
       $("statusText").textContent = `Connected, but the lights rejected the command: ${errText(lastErr)}`;
     }
-    await new Promise(r => setTimeout(r, 40));
+    // Same control repeating (slider drag): short gap. Different command next: give the lights time.
+    const nextKey = pending.size ? pending.keys().next().value : null;
+    await new Promise(r => setTimeout(r, nextKey && nextKey !== key ? 250 : 80));
   }
   busy = false;
 }
@@ -258,11 +294,16 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem("dl." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("dl." + k, JSON.stringify(v)); } catch { /* storage blocked: just don't save */ } },
 };
-const DEFAULTS = { power: "on", mode: "color", color: "#ff4fa3", bri: 100, effect: "", spd: 50 };
+const DEFAULTS = { power: "on", mode: "color", color: "#ff4fa3", bri: 100, effect: "", spd: 50,
+                   micMode: 0x80, micSens: 60, dialect: "modern" };
 const state = Object.assign({}, DEFAULTS, store.get("settings", {}));
+if (!(state.effect >= 0 && state.effect < EFFECTS.length) || state.effect === "") {   // old saves used raw numbers
+  state.effect = ""; if (state.mode === "effect") state.mode = "color";
+}
 const save = () => store.set("settings", state);
 
 function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n>>16)&255, (n>>8)&255, n&255]; }
+const effectCode = id => state.dialect === "classic" ? EFFECTS[id].classic : EFFECTS[id].modern;
 
 // Show the saved settings in the controls.
 function renderUI() {
@@ -272,15 +313,29 @@ function renderUI() {
   $("effect").value = state.mode === "effect" ? String(state.effect) : "";
   $("on").classList.toggle("active", state.power === "on");
   $("off").classList.toggle("active", state.power === "off");
+  $("micOn").classList.toggle("active", state.mode === "mic");
+  $("micOff").classList.toggle("active", state.mode !== "mic");
+  $("micMode").value = String(state.micMode);
+  $("sens").value = state.micSens; $("sensVal").textContent = state.micSens + "%";
+  $("dialect").value = state.dialect;
   $("restore").checked = store.get("restore", true);
 }
+
+// Leaving music mode: tell the lights to stop listening first.
+function leaveMic() { if (state.mode === "mic") send("mic", cmd.mic(false)); }
 
 // Send the whole saved look to the lights (after connecting).
 function applyAll() {
   if (state.power === "off") { send("power", cmd.off()); return; }
   send("power", cmd.on());
-  if (state.mode === "effect" && state.effect) {
-    send("effect", cmd.effect(+state.effect));
+  if (state.mode === "mic") {
+    send("mic", cmd.mic(true));
+    send("micMode", cmd.micMode(state.micMode));
+    send("micSens", cmd.micSens(state.micSens));
+    return;
+  }
+  if (state.mode === "effect" && state.effect !== "") {
+    send("effect", cmd.effect(effectCode(state.effect)));
     send("speed", cmd.speed(state.spd));
   } else {
     send("color", cmd.color(...hexToRgb(state.color)));
@@ -290,8 +345,29 @@ function applyAll() {
 
 function setPower(p) { state.power = p; save(); renderUI(); send("power", p === "on" ? cmd.on() : cmd.off()); }
 function setColor(hex) {
+  leaveMic();
   state.color = hex; state.mode = "color"; save(); renderUI();
   send("color", cmd.color(...hexToRgb(hex)));
+}
+function setEffect(id) {
+  leaveMic();
+  state.effect = id; state.mode = "effect"; save(); renderUI();
+  send("effect", cmd.effect(effectCode(id)));
+  send("speed", cmd.speed(state.spd));
+}
+function setMic(on) {
+  if (on) {
+    if (state.power === "off") setPower("on");
+    state.mode = "mic"; save(); renderUI();
+    send("mic", cmd.mic(true));
+    send("micMode", cmd.micMode(state.micMode));
+    send("micSens", cmd.micSens(state.micSens));
+  } else {
+    send("mic", cmd.mic(false));
+    state.mode = "color";
+    save(); renderUI();
+    applyAll();                                   // back to the saved color
+  }
 }
 
 // ---- Staying connected ----
@@ -358,7 +434,6 @@ $("restore").addEventListener("change", e => store.set("restore", e.target.check
 $("on").onclick = () => setPower("on");
 $("off").onclick = () => setPower("off");
 $("color").addEventListener("input", e => setColor(e.target.value));
-
 for (const hex of SWATCHES) {
   const b = document.createElement("button");
   b.className = "swatch"; b.style.background = hex; b.title = hex; b.setAttribute("aria-label", hex);
@@ -369,33 +444,47 @@ $("bri").addEventListener("input", e => {
   state.bri = +e.target.value; save(); $("briVal").textContent = state.bri + "%";
   send("bright", cmd.bright(state.bri));
 });
-for (const [code, name] of EFFECTS) $("effect").add(new Option(name, code));
-$("effect").addEventListener("change", e => {
-  if (!e.target.value) return;
-  state.effect = +e.target.value; state.mode = "effect"; save();
-  send("effect", cmd.effect(state.effect));
-});
+
+for (const fx of EFFECTS) $("effect").add(new Option(fx.name, fx.id));
+$("effect").addEventListener("change", e => e.target.value !== "" && setEffect(+e.target.value));
 $("spd").addEventListener("input", e => {
   state.spd = +e.target.value; save(); $("spdVal").textContent = state.spd + "%";
   send("speed", cmd.speed(state.spd));
 });
+$("dialect").addEventListener("change", e => {
+  state.dialect = e.target.value; save();
+  fx = 0x80; showFx(false);
+  if (state.mode === "effect" && state.effect !== "") setEffect(state.effect);
+});
 
-// Effect finder: step through raw effect numbers 0x80-0x9c.
-let fx = 0x87;
+// Effect finder: step through raw effect numbers for the chosen light type.
+let fx = 0x80;
+const fxMax = () => state.dialect === "classic" ? 0x9c : 0x95;
 function showFx(sendIt) {
-  const known = EFFECTS.find(([c]) => c === fx);
+  const known = EFFECTS.find(e => effectCode(e.id) === fx);
   $("fxNum").textContent = "#" + fx;
-  $("fxName").textContent = known ? `(listed as "${known[1]}")` : "(not in the list)";
+  $("fxName").textContent = known ? `(listed as "${known.name}")` : "(not in the list)";
   if (sendIt) {
-    state.effect = fx; state.mode = "effect"; save();
-    $("effect").value = known ? String(fx) : "";
+    leaveMic();
+    if (known) { state.effect = known.id; state.mode = "effect"; save(); renderUI(); }
     send("effect", cmd.effect(fx));
     log(`Effect finder: sent #${fx}`);
   }
 }
-$("fxPrev").onclick = () => { fx = fx <= 0x80 ? 0x9c : fx - 1; showFx(true); };
-$("fxNext").onclick = () => { fx = fx >= 0x9c ? 0x80 : fx + 1; showFx(true); };
+$("fxPrev").onclick = () => { fx = fx <= 0x80 ? fxMax() : fx - 1; showFx(true); };
+$("fxNext").onclick = () => { fx = fx >= fxMax() ? 0x80 : fx + 1; showFx(true); };
 showFx(false);
+
+$("micOn").onclick = () => setMic(true);
+$("micOff").onclick = () => setMic(false);
+$("micMode").addEventListener("change", e => {
+  state.micMode = +e.target.value; save();
+  if (state.mode === "mic") send("micMode", cmd.micMode(state.micMode)); else setMic(true);
+});
+$("sens").addEventListener("input", e => {
+  state.micSens = +e.target.value; save(); $("sensVal").textContent = state.micSens + "%";
+  if (state.mode === "mic") send("micSens", cmd.micSens(state.micSens));
+});
 
 renderUI();
 if (navigator.bluetooth) autoReconnect();
